@@ -103,6 +103,23 @@ static void zmalloc_default_oom(size_t size) {
 
 static void (*zmalloc_oom_handler)(size_t) = zmalloc_default_oom;
 
+/* 
+
+封装内存分配器的调用流程
+
+ztry*alloc(...)   ->
+z*alloc(...)      -> ztry*alloc_usable(...) ->  *alloc(...)
+                     记录上申请的size             LIBC or TCMALLOC or JEMALLOC
+
+申请内存的方法
+
+malloc  基础版
+calloc  申请一段并初始化为0
+realloc 尝试在原来的地址上申请新内存，如果size比较小就直接复用了，如果size比较大，就的内容会被迁移过来，但是多出来的部分不会初始化。
+
+分配的过程中会尝试多分配一个size_t的容量，用来存内存的大小。然后真实的指针指向前缀后的第一个位置
+*/
+
 /* Try allocating memory, and return NULL if failed.
  * '*usable' is set to the usable size if non NULL. */
 void *ztrymalloc_usable(size_t size, size_t *usable) {
@@ -340,6 +357,7 @@ void zfree_usable(void *ptr, size_t *usable) {
 #endif
 }
 
+// 复制字符串
 char *zstrdup(const char *s) {
     size_t l = strlen(s)+1;
     char *p = zmalloc(l);
@@ -362,6 +380,7 @@ void zmalloc_set_oom_handler(void (*oom_handler)(size_t)) {
  * We do that in a fork child process to avoid CoW when the parent modifies
  * these shared pages. */
 void zmadvise_dontneed(void *ptr) {
+// 一个问题，为什么只有在JEMALLOC的时候才做advise_dontneed?
 #if defined(USE_JEMALLOC) && defined(__linux__)
     static size_t page_size = 0;
     if (page_size == 0) page_size = sysconf(_SC_PAGESIZE);
@@ -383,6 +402,8 @@ void zmadvise_dontneed(void *ptr) {
 #endif
 }
 
+// RSS Resident Set Size 进程使用的物理内存（包括进程独占内存USS + 共享内存 + 进程占用共享内存）
+// 使用 /proc/self/stat 中第24个字段读取，效率不高，不建议在高频操作中用。
 /* Get the RSS information in an OS-specific way.
  *
  * WARNING: the function zmalloc_get_rss() is not designed to be fast
@@ -729,6 +750,7 @@ size_t zmalloc_get_private_dirty(long pid) {
  * 3) Was modified for Redis by Matt Stancliff.
  * 4) This note exists in order to comply with the original license.
  */
+// 读当前机器的物理内存大小
 size_t zmalloc_get_memory_size(void) {
 #if defined(__unix__) || defined(__unix) || defined(unix) || \
     (defined(__APPLE__) && defined(__MACH__))
