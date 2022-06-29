@@ -3,13 +3,33 @@
  * implementing an O(n) lookup data structure designed to be very memory
  * efficient.
  *
+ * 当hash中的数据比较少的时候用zipmap，如果数据量足够大会切换成哈希表
  * The Redis Hash type uses this data structure for hashes composed of a small
  * number of elements, to switch to a hash table once a given number of
  * elements is reached.
  *
+ * 这个数据结构存储空间的节省是一个巨大的优势
  * Given that many times Redis Hashes are used to represent objects composed
  * of few fields, this is a very big win in terms of used memory.
- *
+ * 
+ * 数据结构的格式分析
+ * <多少个元素>                                           ---(0) 
+ *  [
+ *   <key长度>key1                                       ---(1)
+ *   <value长度>
+ *      <value后空余的长度>value1                          ---(2)
+ *  ]...
+ * <结尾标识符255>
+ *                                          
+ * 其中(0) 只会占用一个byte，如果长度>=254就会触发迭代找一共多少元素。所以元素不能太多
+ * 
+ * 其中(1) 两种形式（极致的压缩）
+ * -> 如果key较少(< 254) 占用1byte
+ * -> 如果key较多(>=254) 占用5byte, 其中1byte(254) 后面的4bytes存储实际长度
+ * 
+ * 其中（2）表示value还有多少byte会补上value的len。
+ * 这部分主要用于处理value调整的情况，往小了调整会直接复用之前的内容。
+ * 
  * --------------------------------------------------------------------------
  *
  * Copyright (c) 2009-2010, Salvatore Sanfilippo <antirez at gmail dot com>
@@ -101,6 +121,7 @@ unsigned char *zipmapNew(void) {
     return zm;
 }
 
+// 解析出zipmap的长度
 /* Decode the encoded length pointed by 'p' */
 static unsigned int zipmapDecodeLength(unsigned char *p) {
     unsigned int len = *p;
@@ -115,6 +136,7 @@ static unsigned int zipmapGetEncodedLengthSize(unsigned char *p) {
     return (*p < ZIPMAP_BIGLEN) ? 1: 5;
 }
 
+// 把元素数量进行编码，根据传入的数量len的大小，编码并且返回编码后zipmap的长度表示占用byte大小（1 or 5）
 /* Encode the length 'l' writing it in 'p'. If p is NULL it just returns
  * the amount of bytes required to encode such a length. */
 static unsigned int zipmapEncodeLength(unsigned char *p, unsigned int len) {
