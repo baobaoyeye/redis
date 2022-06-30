@@ -39,6 +39,7 @@
  * listSetFreeMethod.
  *
  * On error, NULL is returned. Otherwise the pointer to the new list. */
+// 构造一个双端队列
 list *listCreate(void)
 {
     struct list *list;
@@ -54,6 +55,7 @@ list *listCreate(void)
 }
 
 /* Remove all the elements from the list without destroying the list itself. */
+// 只能清理node不能把node内部的对象也一起清理掉，可以通过回调清理node内部的value
 void listEmpty(list *list)
 {
     unsigned long len;
@@ -63,6 +65,7 @@ void listEmpty(list *list)
     len = list->len;
     while(len--) {
         next = current->next;
+        // 从头到尾，如果注册了free的回调就调用回调释放，否则调用zfree释放资源
         if (list->free) list->free(current->value);
         zfree(current);
         current = next;
@@ -86,6 +89,7 @@ void listRelease(list *list)
  * On error, NULL is returned and no operation is performed (i.e. the
  * list remains unaltered).
  * On success the 'list' pointer you pass to the function is returned. */
+// 双端链表插入一个value到头部
 list *listAddNodeHead(list *list, void *value)
 {
     listNode *node;
@@ -112,6 +116,7 @@ list *listAddNodeHead(list *list, void *value)
  * On error, NULL is returned and no operation is performed (i.e. the
  * list remains unaltered).
  * On success the 'list' pointer you pass to the function is returned. */
+// 双端链表插入一个value到尾部
 list *listAddNodeTail(list *list, void *value)
 {
     listNode *node;
@@ -132,6 +137,7 @@ list *listAddNodeTail(list *list, void *value)
     return list;
 }
 
+// 把value对应的节点插入到list中old_node的前面或者后面（after=1的时候插入到后面）
 list *listInsertNode(list *list, listNode *old_node, void *value, int after) {
     listNode *node;
 
@@ -184,6 +190,7 @@ void listDelNode(list *list, listNode *node)
  * call to listNext() will return the next element of the list.
  *
  * This function can't fail. */
+// 如果direction=0时从头开始，否则迭代器从尾部开始
 listIter *listGetIterator(list *list, int direction)
 {
     listIter *iter;
@@ -203,11 +210,13 @@ void listReleaseIterator(listIter *iter) {
 }
 
 /* Create an iterator in the list private iterator structure */
+// 迭代器指向列表头
 void listRewind(list *list, listIter *li) {
     li->next = list->head;
     li->direction = AL_START_HEAD;
 }
 
+// 迭代器指向列表尾部
 void listRewindTail(list *list, listIter *li) {
     li->next = list->tail;
     li->direction = AL_START_TAIL;
@@ -301,7 +310,7 @@ listNode *listSearchKey(list *list, void *key)
     listRewind(list, &iter);
     while((node = listNext(&iter)) != NULL) {
         if (list->match) {
-            if (list->match(node->value, key)) {
+            if (list->match(node->value, key)) { // 调用自定义的匹配函数
                 return node;
             }
         } else {
@@ -333,6 +342,7 @@ listNode *listIndex(list *list, long index) {
 }
 
 /* Rotate the list removing the tail node and inserting it to the head. */
+// 最后node拿出来放到最前面
 void listRotateTailToHead(list *list) {
     if (listLength(list) <= 1) return;
 
@@ -347,6 +357,7 @@ void listRotateTailToHead(list *list) {
     list->head = tail;
 }
 
+// 最前node挪到最后去
 /* Rotate the list removing the head node and inserting it to the tail. */
 void listRotateHeadToTail(list *list) {
     if (listLength(list) <= 1) return;
