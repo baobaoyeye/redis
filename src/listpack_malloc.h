@@ -39,6 +39,7 @@
 #ifndef LISTPACK_ALLOC_H
 #define LISTPACK_ALLOC_H
 #include "zmalloc.h"
+// listpack 的内存申请和释放同样直接复用了z*相关的申请和释放函数
 #define lp_malloc zmalloc
 #define lp_realloc zrealloc
 #define lp_free zfree

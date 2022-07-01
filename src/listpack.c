@@ -174,6 +174,7 @@ int lpSafeToAdd(unsigned char* lp, size_t add) {
  *
  * The function is released under the BSD 3-clause license.
  */
+// 试着把一个字符串表示的数值转换成一个有符号的int64_t
 int lpStringToInt64(const char *s, unsigned long slen, int64_t *value) {
     const char *p = s;
     unsigned long plen = 0;
@@ -235,16 +236,33 @@ int lpStringToInt64(const char *s, unsigned long slen, int64_t *value) {
     return 1;
 }
 
+/* [listpack-head-LP_HDR_SIZE]                                      长度为6byte，4byte表示lp的字节数，2byte表示lp的元素数目
+ * [head-len-flag][int-content-len][backlen]                        int类型，用1,2,3,4,5,9bytes 来容纳不同长度的 [head-len-flag][int-content-len]
+ *                                                                  最大容纳的是 int64
+ *                                                                  head-len-flag 是用4bit 或 8bit来编码
+ * ...
+ * [head-len-flag][header=1][string-content-len<64][backlen]        6BIT  string类型
+ * [head-len-flag][header=2][string-content-len<4096][backlen]      16BIT string类型
+ * [head-len-flag][header=5][string-content-len>=4096][backlen]     32BIT string类型
+ *                                                                  head-len-flag 是用4bit 编码表示后面的header的长度。
+ *                                                                  backlen 长度1,2,3,4,5 
+ *                                                                          如果长度<128，直接用1byte记录长度
+ *                                                                          如果长度>=128,则以128填充最后8bit (1byte)  
+ * ...
+ * [尾部标记-LP_EOF]                                                 长度为1byte
+ * */
+
 /* Create a new, empty listpack.
  * On success the new listpack is returned, otherwise an error is returned.
  * Pre-allocate at least `capacity` bytes of memory,
  * over-allocated memory can be shrunk by `lpShrinkToFit`.
  * */
 unsigned char *lpNew(size_t capacity) {
+    // 最少也有7个字符
     unsigned char *lp = lp_malloc(capacity > LP_HDR_SIZE+1 ? capacity : LP_HDR_SIZE+1);
     if (lp == NULL) return NULL;
-    lpSetTotalBytes(lp,LP_HDR_SIZE+1);
-    lpSetNumElements(lp,0);
+    lpSetTotalBytes(lp,LP_HDR_SIZE+1); // 往lp的头设置字节数，占用4byte
+    lpSetNumElements(lp,0); // 往lp的头设置元素数目，占用2byte
     lp[LP_HDR_SIZE] = LP_EOF;
     return lp;
 }
@@ -254,6 +272,7 @@ void lpFree(unsigned char *lp) {
     lp_free(lp);
 }
 
+// 把内存缩小到实际的size，这里包括头部的大小
 /* Shrink the memory to fit. */
 unsigned char* lpShrinkToFit(unsigned char *lp) {
     size_t size = lpGetTotalBytes(lp);
@@ -264,6 +283,9 @@ unsigned char* lpShrinkToFit(unsigned char *lp) {
     }
 }
 
+// 把整数编码成字符的标识形式，根据整数的大小编码后的长度是 1,2,3,4,5,9，
+// 编码后的[0]位置通过对应类型的掩码可以判断出到底是什么类型长度的整数类型。
+// 这里空间是比较节省的
 /* Stores the integer encoded representation of 'v' in the 'intenc' buffer. */
 static inline void lpEncodeIntegerGetType(int64_t v, unsigned char *intenc, uint64_t *enclen) {
     if (v >= 0 && v <= 127) {
@@ -329,10 +351,11 @@ static inline void lpEncodeIntegerGetType(int64_t v, unsigned char *intenc, uint
  * in order to be represented. */
 static inline int lpEncodeGetType(unsigned char *ele, uint32_t size, unsigned char *intenc, uint64_t *enclen) {
     int64_t v;
+    // 如果可以转换成int64 表示就转换然后编码层lp格式，返回编码成int的标签
     if (lpStringToInt64((const char*)ele, size, &v)) {
         lpEncodeIntegerGetType(v, intenc, enclen);
         return LP_ENCODING_INT;
-    } else {
+    } else { // 如果转不了就根据实际的长度，设置一个实际的长度，这里看起来长度比较短的字符串会占用更短的头部。
         if (size < 64) *enclen = 1+size;
         else if (size < 4096) *enclen = 2+size;
         else *enclen = 5+(uint64_t)size;
@@ -426,6 +449,7 @@ static inline void lpEncodeString(unsigned char *buf, unsigned char *s, uint32_t
  * str), so should only be called when we know 'p' was already validated by
  * lpCurrentEncodedSizeBytes or ASSERT_INTEGRITY_LEN (possibly since 'p' is
  * a return value of another function that validated its return. */
+// 返回编码后的长度 len(【编码位】+【内容长度】+【内容】)
 static inline uint32_t lpCurrentEncodedSizeUnsafe(unsigned char *p) {
     if (LP_ENCODING_IS_7BIT_UINT(p[0])) return 1;
     if (LP_ENCODING_IS_6BIT_STR(p[0])) return 1+LP_ENCODING_6BIT_STR_LEN(p);
@@ -444,6 +468,7 @@ static inline uint32_t lpCurrentEncodedSizeUnsafe(unsigned char *p) {
  * This includes just the encoding byte, and the bytes needed to encode the length
  * of the element (excluding the element data itself)
  * If the element encoding is wrong then 0 is returned. */
+// 返回编码后的元信息长度 len(【编码位】+【内容长度】)
 static inline uint32_t lpCurrentEncodedSizeBytes(unsigned char *p) {
     if (LP_ENCODING_IS_7BIT_UINT(p[0])) return 1;
     if (LP_ENCODING_IS_6BIT_STR(p[0])) return 1;
@@ -510,6 +535,7 @@ unsigned char *lpLast(unsigned char *lp) {
     return lpPrev(lp,p); /* Will return NULL if EOF is the only element. */
 }
 
+// 如果lp的元素数量超过65535会在常数时间拿到元素数量，否则需要线性时间拿到
 /* Return the number of elements inside the listpack. This function attempts
  * to use the cached value when within range, otherwise a full scan is
  * needed. As a side effect of calling this function, the listpack header
@@ -534,7 +560,7 @@ unsigned long lpLength(unsigned char *lp) {
     return count;
 }
 
-/* Return the listpack element pointed by 'p'.
+/* Return the listpack element pointed by 'p'.szx
  *
  * The function changes behavior depending on the passed 'intbuf' value.
  * Specifically, if 'intbuf' is NULL:
@@ -780,6 +806,12 @@ unsigned char *lpFind(unsigned char *lp, unsigned char *p, unsigned char *s,
  * For deletion operations (both 'elestr' and 'eleint' set to NULL) 'newp' is
  * set to the next element, on the right of the deleted one, or to NULL if the
  * deleted element was the last one. */
+/*
+lp，                   头指针，
+elsetr，eleint，size， 插入，替换的字符串或者int的信息，如果是删除的话传NULL
+p，where，             往哪个指针放，放到这个指针的前一个位置、替换、后一个位置
+newp，                 放完以后新的指向
+*/
 unsigned char *lpInsert(unsigned char *lp, unsigned char *elestr, unsigned char *eleint,
                         uint32_t size, unsigned char *p, int where, unsigned char **newp)
 {
@@ -861,9 +893,9 @@ unsigned char *lpInsert(unsigned char *lp, unsigned char *elestr, unsigned char 
 
     /* Setup the listpack relocating the elements to make the exact room
      * we need to store the new one. */
-    if (where == LP_BEFORE) {
+    if (where == LP_BEFORE) { // 往后挪一个Entry的位置
         memmove(dst+enclen+backlen_size,dst,old_listpack_bytes-poff);
-    } else { /* LP_REPLACE. */
+    } else { /* LP_REPLACE. */ // 挪动替换长度，可能是往前挪，也可能往后挪。整体一段内存挪动
         long lendiff = (enclen+backlen_size)-replaced_len;
         memmove(dst+replaced_len+lendiff,
                 dst+replaced_len,
@@ -871,7 +903,7 @@ unsigned char *lpInsert(unsigned char *lp, unsigned char *elestr, unsigned char 
     }
 
     /* Realloc after: we need to free space. */
-    if (new_listpack_bytes < old_listpack_bytes) {
+    if (new_listpack_bytes < old_listpack_bytes) { // 如果是往前挪了，那要释放后面的空间
         if ((lp = lp_realloc(lp,new_listpack_bytes)) == NULL) return NULL;
         dst = lp + poff;
     }
@@ -883,6 +915,7 @@ unsigned char *lpInsert(unsigned char *lp, unsigned char *elestr, unsigned char 
          * the EOF element. */
         if (delete && dst[0] == LP_EOF) *newp = NULL;
     }
+    // 如果不是删除的话，往空出来的位置写入内容
     if (!delete) {
         if (enctype == LP_ENCODING_INT) {
             memcpy(dst,eleint,enclen);
@@ -894,6 +927,7 @@ unsigned char *lpInsert(unsigned char *lp, unsigned char *elestr, unsigned char 
         dst += backlen_size;
     }
 
+    // 更新头部信息
     /* Update header. */
     if (where != LP_REPLACE || delete) {
         uint32_t num_elements = lpGetNumElements(lp);
@@ -999,6 +1033,7 @@ unsigned char *lpDelete(unsigned char *lp, unsigned char *p, unsigned char **new
 }
 
 /* Delete a range of entries from the listpack start with the element pointed by 'p'. */
+// 核心就是找到要删除的区域，然后往前一次性挪动那么多位置
 unsigned char *lpDeleteRangeWithEntry(unsigned char *lp, unsigned char **p, unsigned long num) {
     size_t bytes = lpBytes(lp);
     unsigned long deleted = 0;
@@ -1023,7 +1058,7 @@ unsigned char *lpDeleteRangeWithEntry(unsigned char *lp, unsigned char **p, unsi
     unsigned long poff = first-lp;
 
     /* Move tail to the front of the listpack */
-    memmove(first, tail, eofptr - tail + 1);
+    memmove(first, tail, eofptr - tail + 1); 
     lpSetTotalBytes(lp, bytes - (tail - first));
     uint32_t numele = lpGetNumElements(lp);
     if (numele != LP_HDR_NUMELE_UNKNOWN)
@@ -1186,7 +1221,7 @@ unsigned char *lpSeek(unsigned char *lp, long index) {
         if (index >= (long)numele) return NULL; /* Out of range the other side. */
         /* We want to scan right-to-left if the element we are looking for
          * is past the half of the listpack. */
-        if (index > (long)numele/2) {
+        if (index > (long)numele/2) { // 找到seek最快的方向
             forward = 0;
             /* Right to left scanning always expects a negative index. Convert
              * our index to negative form. */
@@ -1364,6 +1399,7 @@ static inline void lpSaveValue(unsigned char *val, unsigned int len, int64_t lva
     dest->lval = lval;
 }
 
+// 这里考虑用listpack保存Key Value 难道是map？？
 /* Randomly select a pair of key and value.
  * total_count is a pre-computed length/2 of the listpack (to avoid calls to lpLength)
  * 'key' and 'val' are used to store the result key value pair.
@@ -1389,6 +1425,7 @@ void lpRandomPair(unsigned char *lp, unsigned long total_count, listpackEntry *k
  * 'vals' args. The order of the picked entries is random, and the selections
  * are non-unique (repetitions are possible).
  * The 'vals' arg can be NULL in which case we skip these. */
+// 拿到的随机KV可能会是重复的。
 void lpRandomPairs(unsigned char *lp, unsigned int count, listpackEntry *keys, listpackEntry *vals) {
     unsigned char *p, *key, *value;
     unsigned int klen = 0, vlen = 0;
@@ -1412,6 +1449,7 @@ void lpRandomPairs(unsigned char *lp, unsigned int count, listpackEntry *keys, l
         picks[i].order = i;
     }
 
+    // 这里排序为了迭代往后找的时候可以顺序的找，速度更快。
     /* sort by indexes. */
     qsort(picks, count, sizeof(rand_pick), uintCompare);
 
@@ -1422,6 +1460,7 @@ void lpRandomPairs(unsigned char *lp, unsigned int count, listpackEntry *keys, l
         key = lpGetValue(p, &klen, &klval);
         assert((p = lpNext(lp, p)));
         value = lpGetValue(p, &vlen, &vlval);
+        // 这里的while循环为了保证取到重复的数据的时候可以在同一个位置再玩耍。
         while (pickindex < count && lpindex == picks[pickindex].index) {
             int storeorder = picks[pickindex].order;
             lpSaveValue(key, klen, klval, &keys[storeorder]);
@@ -1442,6 +1481,9 @@ void lpRandomPairs(unsigned char *lp, unsigned int count, listpackEntry *keys, l
  * The 'vals' arg can be NULL in which case we skip these.
  * The return value is the number of items picked which can be lower than the
  * requested count if the listpack doesn't hold enough pairs. */
+/* 无重复抽样，从头开始往后找，每次跳两个元素，然后用当前待抽样和剩余元素的比做阈值，随机中奖的就留下，没中奖的就跳过。
+ 最后可能拿不到想要拿的元素的数量
+ */
 unsigned int lpRandomPairsUnique(unsigned char *lp, unsigned int count, listpackEntry *keys, listpackEntry *vals) {
     unsigned char *p, *key;
     unsigned int klen = 0;

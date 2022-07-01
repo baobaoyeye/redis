@@ -355,18 +355,20 @@ void freeStreamObject(robj *o) {
     freeStream(o->ptr);
 }
 
+// 增加对象的引用计数
 void incrRefCount(robj *o) {
     if (o->refcount < OBJ_FIRST_SPECIAL_REFCOUNT) {
         o->refcount++;
     } else {
-        if (o->refcount == OBJ_SHARED_REFCOUNT) {
+        if (o->refcount == OBJ_SHARED_REFCOUNT) { // 永远不用删掉的
             /* Nothing to do: this refcount is immutable. */
-        } else if (o->refcount == OBJ_STATIC_REFCOUNT) {
+        } else if (o->refcount == OBJ_STATIC_REFCOUNT) { // 是在栈上分配的对象，不用关注引用计数
             serverPanic("You tried to retain an object allocated in the stack");
         }
     }
 }
 
+// 引用计数删除，顺手做free操作
 void decrRefCount(robj *o) {
     if (o->refcount == 1) {
         switch(o->type) {
